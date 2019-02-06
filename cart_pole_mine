@@ -1,0 +1,121 @@
+
+import random
+import gym
+import numpy as np
+import pandas as pd
+import matplotlib.pyplot as plt
+
+from keras.models import Sequential
+from keras.layers import Dense
+from keras.optimizers import Adam
+
+
+env = gym.make('CartPole-v0')
+
+alpha = 0.01
+alpha_decay = 0.01
+model = Sequential()
+model.add(Dense(10, input_dim=5, activation='tanh'))
+model.add(Dense(8, activation='tanh'))
+model.add(Dense(4, activation='linear'))
+model.compile(loss='mse', optimizer=Adam(lr=alpha, decay=alpha_decay))
+
+
+def random_play():
+    memory = pd.DataFrame()
+    state = env.reset()
+    for t in range(300):
+        action = env.action_space.sample()
+        observation, reward, done, info = env.step(action)
+        # print(type(action))
+        # print(list(state) + [action] + list(observation), t)
+        df = pd.DataFrame([list(state) + [action] + list(observation)])
+        memory = memory.append(df)
+        state = observation
+        if done:
+            #print("Episode finished after {} timesteps".format(t + 1))
+            break
+    return memory
+
+def initial_train(plays = 30):
+    var_space = pd.DataFrame()
+    for play in range(plays):
+        df = random_play()
+        var_space = var_space.append(df)
+     #   print(play)
+    print("finished initialtraining.. var space:", var_space.shape)
+    return var_space
+
+
+def optimise(model, state, horizon=1, strategies = 5):
+    act = np.random.randint(2, size=(horizon, strategies))
+    best_strategy = 0
+    obj = 999
+    for strategy in range(strategies):
+        future_state = state.copy()
+        for time in range(horizon):
+            action  = act[time, strategy]
+            X = pd.DataFrame([list(future_state) + [action]])
+            future_state= model.predict(X)[0]
+        if abs(future_state[2])< obj:
+            obj = abs(future_state[2])
+            best_strategy = act[:,strategy]
+  #      print("obj:" ,obj, "action: ", best_strategy)
+    return best_strategy[0]
+
+
+
+
+
+def model_play(model):
+    memory = pd.DataFrame()
+    state = env.reset()
+    for t in range(300):
+        action = optimise(model, state, horizon=4, strategies = 6)
+        expected_res = model.predict(np.array([list(state) + [action]]))
+
+        observation, reward, done, info = env.step(action)
+        # print(type(action))
+        # print(list(state) + [action] + list(observation), t)
+        df = pd.DataFrame([list(state) + [action] + list(observation)])
+        memory = memory.append(df)
+        state = observation.copy()
+        # print("expected res", expected_res)
+        # print(observation)
+        if done:
+            print("Episode finished after {} timesteps".format(t + 1))
+
+            break
+    return memory
+
+
+def run_episodes(model, plays = 30):
+    var_space = pd.DataFrame()
+    for play in range(plays):
+        df = model_play(model)
+        var_space = var_space.append(df)
+        print(play)
+    return var_space
+
+def run_all(model, eras= 10):
+    loss = []
+    var_space = initial_train()
+    X = var_space.loc[:,range(5)]
+    y = var_space.loc[:,range(5,9)]
+    model.fit(X, y, verbose=0)
+    for era in range(eras):
+        df_var_space = run_episodes(model, plays=10)
+        var_space = var_space.append(df_var_space)
+        X = var_space.loc[:, range(5)]
+        y = var_space.loc[:, range(5, 9)]
+        model.fit(X, y, verbose=0)
+        X_test = X.iloc[-40:,:]
+        y_test = y.iloc[-40:,:]
+        score = model.evaluate(X_test, y_test)
+        print("era finished, var_space len", var_space.shape, "score: ", score)
+        loss.append(score)
+    return loss, model
+
+if __name__ == '__main__':
+
+    loss, model = run_all(model, eras=25)
