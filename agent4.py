@@ -11,44 +11,45 @@ from keras.optimizers import Adam
 from sklearn.neighbors import NearestNeighbors
 from sklearn import preprocessing
 from sklearn.preprocessing import normalize
-
+from sklearn.neural_network import MLPRegressor
 
 error_store = []
+
 
 class agent():
 
     def __init__(self, obs_dim = 4, act_dim = 1, train_freq = 100, model_lr = 0.01, model_decay = 0.01, from_file=False):
-        self.model = Sequential()
-        self.model.add(Dense(10, input_dim=obs_dim+act_dim, activation='tanh'))
-        self.model.add(Dense(8, activation='tanh'))
-        self.model.add(Dense(obs_dim+1, activation='linear'))
-        self.model.compile(loss='mse', optimizer=Adam(lr=model_lr, decay=model_decay))
+        self.model = MLPRegressor(solver='adam', alpha=1e-5,  hidden_layer_sizes=(5,5,3), max_iter=2000)
+        # self.model.add(Dense(10, input_dim=obs_dim+act_dim, activation='tanh'))
+        # self.model.add(Dense(8, activation='tanh'))
+        # self.model.add(Dense(obs_dim+1, activation='linear'))
+        # self.model.compile(loss='mse', optimizer=Adam(lr=model_lr, decay=model_decay))
         self.obs_dim = obs_dim
         self.act_dim = act_dim
         self.train_freq  = train_freq
         self.memory = pd.DataFrame()
         self.last_memory_train = 0
-        self.model_loss = 100
+        self.model_loss = 200
+
 
         if from_file == True:
             self.memory = pd.read_csv('out.csv')
             self.memory.columns = range(14)
+            self.process_info()
 
         self.error_threshold = 0.4
 
 
-    def process_info(self, df):
-        assert(df.shape[1]==self.obs_dim*2+self.act_dim + 1)
+    def process_info(self):
+        assert(self.memory.shape[1]==self.obs_dim*2+self.act_dim + 1)
         X = self.memory.iloc[:, range(self.act_dim + self.obs_dim)]
         y = self.memory.iloc[:, range(self.act_dim + self.obs_dim, self.act_dim + self.obs_dim*2 + 1)]
-        hist = self.model.fit(X, y, verbose=0)
+        self.model.fit(X, y)
         self.last_memory_train = len(self.memory)
-        self.model_loss = hist.history["loss"]
-        print("memory shape", self.memory.shape, "score: ", self.model_loss)
-        try:
-            print(np.average(error_store[:-30]))
-        except:
-            pass
+        #self.model_loss = hist.history["loss"]
+        print("memory shape", self.memory.shape)#, "score: ", self.model_loss)
+        print(self.model.score(X, y))
+
 
 
     def live(self, state, env):
@@ -63,24 +64,26 @@ class agent():
 
         if expectation is None:
             self.memory = self.memory.append(df_info)
+           # pass
         else:
             error = self.mean_absolute_percentage_error(pd.DataFrame([list(observation) + [reward]]), expectation[:, :])
             error_store.append(np.amax(error))
             if np.amax(error)>self.error_threshold:
                 self.memory = self.memory.append(df_info)
+               # pass
             else:
                 pass
 
         if (len(self.memory) - self.last_memory_train) > self.train_freq:
-            self.process_info(df_info)
-
+            self.process_info()
+            #pass
 
         return observation, reward, done, info
 
 
-    def choose_action(self, state, strategies = 6, horizon = 6):
+    def choose_action(self, state, strategies = 6, horizon = 1):
         ## to be redone
-        df_actions = pd.DataFrame(np.random.randint(2, size=(strategies, horizon)))
+        df_actions = pd.DataFrame(np.random.randint(3, size=(strategies, horizon)))
         # df_actions.iloc[:int(strategies/3),0] = 0
         # df_actions.iloc[int(strategies/3):,0] = 1
 
@@ -95,16 +98,16 @@ class agent():
 
             # a = np.array([[2,3,5,6,7,6,7],[4,5,4,3,6,6,8]])
             # b = np.array([[6,3],[5,5],[8,8]])
-            a = np.array(df_input)
-            d = np.array(self.memory.iloc[:,:7])
-            c = self.calc_distance(a,d)
-            uncertainty = pd.DataFrame(c.transpose())
+           # a = np.array(df_input)
+            #d = np.array(self.memory.iloc[:,:7])
+            #c = self.calc_distance(a,d)
+           # uncertainty = pd.DataFrame(c.transpose())
 
             output = pd.DataFrame((self.model.predict(df_input)))
             df_future_state = output.iloc[:,:-1]
             df_total_reward = df_total_reward  + np.array(output.iloc[:,-1])
 
-            df_total_uncertainty = df_total_uncertainty +np.array(uncertainty).reshape(1,-1)
+           # df_total_uncertainty = df_total_uncertainty +np.array(uncertainty).reshape(1,-1)
             ### at each step calculate distances in memory and prediction.
 
         #decide to explore or exploit.
@@ -114,11 +117,16 @@ class agent():
        # print(df_future_state)
         # print(df_actions)
         #obj_function =self.evaluate_obj(df_future_state, self.control_points)
-        obj_function = 0*df_total_reward + df_total_uncertainty
+        obj_function = -np.array(df_future_state[4])**2 + np.array(-df_future_state[5])**2#0*df_total_reward #+ df_total_uncertainty
+
+        #obj_function = -np.array(df_future_state[0])  -np.array(df_future_state[0])*np.array(df_future_state[2])+np.array(df_future_state[1])*np.array(df_future_state[3])
         #obj_function = 0 * df_total_reward - tot_confidence.iloc[:,0]
+        #print(df_total_reward, list(df_future_state[0]))
         best_strategy = obj_function.argmax()
         #best_strategy = abs(df_future_state[2]).idxmin()
+
         best_action = df_actions.iloc[best_strategy,0]
+
 
         input = pd.DataFrame([list(state) + [best_action]])
         expectation = self.model.predict(input)
@@ -160,7 +168,7 @@ if __name__ == '__main__':
     env = gym.make('Acrobot-v1')
    # agent_2 = agent()
    ## env = gym.make('Pendulum-v0')
-    agent_2 = agent(obs_dim = 6, act_dim = 1,  train_freq = 100, model_lr = 0.01, model_decay = 0.01, from_file=True)
+    agent_2 = agent(obs_dim = 6, act_dim = 1,  train_freq = 100, model_lr = 0.01, model_decay = 0.01, from_file=False)
 
 
     def run_episode(render = False):
@@ -187,15 +195,15 @@ if __name__ == '__main__':
                 return t
 
 
-    max_episodes = 30
+    max_episodes = 100
     best_t = 500
     for episode in range(max_episodes):
-        t = run_episode()
+        t = run_episode(render = True)
         print("Episode", episode, "finished after {} timesteps".format(t + 1), "best time:", best_t)
         if t < best_t:
             best_t = t
+        agent_2.memory.to_csv('out.csv', index=False)
         # print("finished at episonde", episode)
 
-    agent_2.memory.to_csv('out.csv', index=False)
 
-    run_episode(render=True)
+    #run_episode(render=True)
