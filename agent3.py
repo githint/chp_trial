@@ -9,9 +9,12 @@ from keras.models import Sequential
 from keras.layers import Dense
 from keras.optimizers import Adam
 import time
+from sklearn.neighbors import NearestNeighbors
+import math
 
 target = 1000
 timescale = 5
+
 #
 # self.max_points_space = 1000
 # var_point = int(np.power(self.max_points_space, 1/obs_dim))
@@ -38,27 +41,28 @@ class agent():
         #var_point = int(np.power(self.max_points_space, 1 / (obs_dim+ act_dim)))
         #self.confidence_space = np.zeros(tuple(var_point for i in range(obs_dim + act_dim)))
         self.error_threshold = 0.4
+        self.nbrs =  NearestNeighbors(n_neighbors=5, algorithm='ball_tree')
+        self.max_distance_nbrs = 0.3
 
 
-
-    def observe(self, df, df_observation_, expectation = None):
+    def observe(self, df, df_observation_, confidence, expectation = None):
 
         if expectation is None:
-            df["confidence"] = 0.5
-        elif expectation[:, -1]>0.5 is not None:
+            df["confidence"] = 0
+        elif confidence>0.2:
             error = self.mean_absolute_percentage_error(df_observation_, expectation[:,:-1])
             #print("error", error, "obs", df_observation_, "exp",df_expectation[:,:-1] )
             if np.amax(error) > self.error_threshold:
-                df["confidence"] = 0
+                df["confidence"] = -1
             else:
                 df["confidence"] = 1
         else:
             error = self.mean_absolute_percentage_error(df_observation_, expectation[:, :-1])
             # print("error", error, "obs", df_observation_, "exp",df_expectation[:,:-1] )
             if np.amax(error) > self.error_threshold:
-                df["confidence"] = 0.5
+                df["confidence"] = 0
             else:
-                df["confidence"] = 0.7
+                df["confidence"] = 0.3
         # if expectation is not None:
         #     print("confidence",expectation[:, -1], "error", np.amax(error))
         self.memory = self.memory.append(df)
@@ -70,6 +74,7 @@ class agent():
             self.last_memory_train = len(self.memory)
             self.model_loss = hist.history["loss"]
             print("memory shape", self.memory.shape, "score: ", self.model_loss)
+            self.nbrs.fit(X)
 
 
 
@@ -77,21 +82,23 @@ class agent():
 
 
     def act(self, state, env):
-        if len(self.memory)<self.train_freq+10: ##first actions are taken randomly
+        if len(self.memory)<self.train_freq+1: ##first actions are taken randomly
             action = env.action_space.sample()
             expectation = None
+            confidence = 0
         else:
-            action, expectation = self.choose_action(state)
+            action, expectation, confidence = self.choose_action(state)
         #print("expect", expectation)
         observation, reward, done, info = env.step(action)
         df_observation = pd.DataFrame([list(state) + [action] + list(observation) + [reward]])
         df_observation_ = pd.DataFrame([list(observation) + [reward]])
-        self.observe(df_observation, df_observation_, expectation)
+
+        self.observe(df_observation, df_observation_, confidence, expectation)
         # self.reward += reward
         return observation, reward, done, info
 
 
-    def choose_action(self, state, strategies = 6, horizon = 7):
+    def choose_action(self, state, strategies = 6, horizon = 6):
         ## to be redone
         df_actions = pd.DataFrame(np.random.randint(2, size=(strategies, horizon)))
         df_actions.iloc[:int(strategies/2),0] = 0
@@ -108,19 +115,52 @@ class agent():
             output = pd.DataFrame((self.model.predict(df_input)))
             df_future_state = output.iloc[:,:-2]
             df_total_reward = df_total_reward  + output.iloc[:,-2]
-            df_total_confidence += output.iloc[:,-1]
+            df_total_confidence = output.iloc[:,-1]
+
+        # my_input = df_future_state.copy()
+        # my_input["action"] = df_actions[0]
+        # distances, indices = self.nbrs.kneighbors(my_input)
+        # a = distances < self.max_distance_nbrs
+        # m = agent_2.memory.iloc[indices[a], -1]
+        # ind = np.cumsum(np.sum(a, axis=1))
+        # tot_confidence = []
+        # ind = list(ind)
+        # ind = [0] + ind
+        # for i in range(indices.shape[0]):
+        #     val = np.mean(m.iloc[ind[i]:ind[i + 1]])
+        #     if math.isnan(val):
+        #         val = 0
+        #     tot_confidence.append(val)
+        #
+        # tot_confidence = pd.DataFrame({"confidence": tot_confidence})
+
+
         # print("state", state)
        # print(df_future_state)
         # print(df_actions)
         #obj_function =self.evaluate_obj(df_future_state, self.control_points)
-        obj_function = df_total_reward - df_total_confidence
+        obj_function = 0*df_total_reward - df_total_confidence
+        #obj_function = 0 * df_total_reward - tot_confidence.iloc[:,0]
         best_strategy = obj_function.idxmax()
         #best_strategy = abs(df_future_state[2]).idxmin()
         best_action = df_actions.iloc[best_strategy,0]
         input = pd.DataFrame([list(state) + [best_action]])
         expectation = self.model.predict(input)
         # print("best action",best_action)
-        return best_action, expectation
+
+        #confidence = tot_confidence.iloc[best_strategy,0]
+        confidence = df_total_confidence.iloc[best_strategy]
+
+        # distances, indices = self.nbrs.kneighbors(input)
+        # indices = indices[distances < self.max_distance_nbrs]
+        # try:
+        #     confidence = np.mean(self.memory.iloc[indices[0],-1])
+        # except:
+        #     confidence = 0
+        #print("confidence", confidence, "distance", distances)
+        #print(obj_function)
+
+        return best_action, expectation, confidence
 
     @staticmethod
     def evaluate_obj(df, dict_obj):
